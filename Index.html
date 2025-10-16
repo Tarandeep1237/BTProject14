@@ -1,0 +1,293 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Blockchain Network Topology Prediction</title>
+  <style>
+    :root {
+      --bg:#f6fbff; --card:#ffffff; --accent:#2b6cb0; --muted:#6b7280;
+      font-family: Inter, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial;
+    }
+    body { margin:0; background:var(--bg); color:#111; }
+    header { padding:18px 28px; border-bottom:1px solid #e6eef9; background:linear-gradient(90deg,#f7fbff,#f0f6ff); }
+    h1 { margin:0; color:var(--accent); font-size:20px; }
+    .container { display:grid; grid-template-columns:360px 1fr; gap:18px; padding:20px; max-width:1200px; margin:18px auto; }
+    .card { background:var(--card); border-radius:10px; padding:16px; box-shadow:0 6px 18px rgba(45,66,100,0.06); }
+    .section-title { color:var(--accent); font-weight:600; margin-bottom:8px; }
+    label { display:block; margin:8px 0 6px; color:var(--muted); font-size:13px; }
+    button { background:var(--accent); color:white; padding:8px 12px; border-radius:8px; border:0; cursor:pointer; font-weight:600; }
+    button.secondary { background:transparent; color:var(--accent); border:1px solid #dbeefe; }
+    .small { font-size:13px; color:var(--muted); }
+    #canvasWrap { height:520px; display:flex; align-items:center; justify-content:center; background:linear-gradient(180deg,#ffffff,#f7fbff); border-radius:10px; overflow:hidden; }
+    canvas { background:transparent; display:block; max-width:100%; }
+    .controls { display:flex; gap:8px; flex-wrap:wrap; margin-top:10px; }
+    table { width:100%; border-collapse:collapse; margin-top:10px; font-size:13px; }
+    th,td { padding:8px; border-bottom:1px solid #f0f3f8; text-align:left; }
+    .metrics { display:flex; gap:8px; margin-top:10px; flex-wrap:wrap; }
+    .metric { background:#f7fbff; padding:8px; border-radius:8px; color:var(--accent); font-weight:700; }
+    footer { max-width:1200px; margin:8px auto 40px; color:var(--muted); font-size:13px; text-align:center; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Project: Blockchain Network Topology Prediction Using Graph Neural Networks</h1>
+    <div class="small">Demo: Simulated GCN-based link prediction in a blockchain network</div>
+  </header>
+
+  <main class="container">
+    <aside class="card">
+      <div class="section-title">Inputs</div>
+      <label>Upload graph JSON (.json with nodes + edges):</label>
+      <input id="fileInput" type="file" accept=".json" />
+      <div class="controls">
+        <button id="genSmall">Generate small (8)</button>
+        <button id="genMedium">Generate medium (16)</button>
+        <button id="genLarge">Generate large (28)</button>
+      </div>
+      <hr>
+      <div class="section-title">Predict</div>
+      <select id="modeSelect">
+        <option value="prob">Probability-based</option>
+        <option value="heuristic">Heuristic</option>
+      </select>
+      <div class="small">Top <input id="topK" type="number" value="6" style="width:50px" /> predictions</div>
+      <div class="controls">
+        <button id="predictBtn">Run Prediction</button>
+        <button id="resetBtn" class="secondary">Reset</button>
+      </div>
+      <hr>
+      <div class="section-title">Export</div>
+      <div class="controls">
+        <button id="downloadJSON">Download JSON</button>
+        <button id="downloadCSV" class="secondary">Download CSV</button>
+      </div>
+    </aside>
+
+    <section>
+      <div class="card">
+        <div class="section-title">Network Visualization</div>
+        <div id="canvasWrap"><canvas id="netCanvas" width="900" height="520"></canvas></div>
+        <div class="controls" style="justify-content:flex-end">
+          <button id="toggleLabels">Toggle Labels</button>
+          <button id="simulateStep" class="secondary">Simulate Time Step</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="section-title">Results</div>
+        <div class="metrics">
+          <div class="metric" id="m_newEdges">New edges: 0</div>
+          <div class="metric" id="m_estAcc">Estimated (simulated) accuracy: -</div>
+          <div class="metric" id="m_auc">Estimated (simulated) AUC: -</div>
+        </div>
+        <table>
+          <thead><tr><th>#</th><th>From</th><th>To</th><th>Score</th></tr></thead>
+          <tbody id="predTable"></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <footer class="small">Demo frontend for GNN-style blockchain topology prediction. Predictions are simulated for demo purposes.</footer>
+
+  <script>
+    let graph = { nodes: [], edges: [] };
+    let predicted = [];
+    let showLabels = true;
+    const canvas = document.getElementById('netCanvas');
+    const ctx = canvas.getContext('2d');
+    const predTableBody = document.getElementById('predTable');
+
+    function clearGraph() {
+      graph = { nodes: [], edges: [] };
+      predicted = [];
+      updateMetrics();
+      draw();
+    }
+
+    function generateRandomGraph(n) {
+      clearGraph();
+      for (let i = 0; i < n; i++) {
+        graph.nodes.push({ id: 'N' + (i + 1), x: Math.random() * canvas.width, y: Math.random() * canvas.height, deg: 0 });
+      }
+      for (let i = 0; i < n; i++) {
+        let m = Math.floor(Math.random() * 3) + 1;
+        for (let k = 0; k < m; k++) {
+          let j = Math.floor(Math.random() * n);
+          if (j !== i) addEdge(graph.nodes[i].id, graph.nodes[j].id);
+        }
+      }
+      computeDegrees();
+      draw();
+    }
+
+    function addEdge(a, b) {
+      if (!graph.edges.some(e => (e.from === a && e.to === b) || (e.from === b && e.to === a))) {
+        graph.edges.push({ from: a, to: b });
+      }
+    }
+
+    function computeDegrees() {
+      graph.nodes.forEach(n => n.deg = 0);
+      graph.edges.forEach(e => {
+        const na = graph.nodes.find(n => n.id === e.from);
+        const nb = graph.nodes.find(n => n.id === e.to);
+        if (na) na.deg++;
+        if (nb) nb.deg++;
+      });
+    }
+
+    function draw() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.lineWidth = 2;
+      graph.edges.forEach(e => {
+        const a = graph.nodes.find(n => n.id === e.from);
+        const b = graph.nodes.find(n => n.id === e.to);
+        if (!a || !b) return;
+        ctx.strokeStyle = '#1f78b4';
+        ctx.beginPath();
+        ctx.moveTo(a.x, a.y);
+        ctx.lineTo(b.x, b.y);
+        ctx.stroke();
+      });
+      ctx.setLineDash([5, 5]);
+      predicted.forEach(e => {
+        const a = graph.nodes.find(n => n.id === e.from);
+        const b = graph.nodes.find(n => n.id === e.to);
+        if (!a || !b) return;
+        ctx.strokeStyle = '#2ca02c';
+        ctx.beginPath();
+        ctx.moveTo(a.x, a.y);
+        ctx.lineTo(b.x, b.y);
+        ctx.stroke();
+      });
+      ctx.setLineDash([]);
+      graph.nodes.forEach(n => {
+        ctx.beginPath();
+        ctx.fillStyle = '#ff7f0e';
+        ctx.arc(n.x, n.y, 6 + Math.log(1 + n.deg), 0, Math.PI * 2);
+        ctx.fill();
+        if (showLabels) {
+          ctx.fillStyle = '#222';
+          ctx.font = '12px sans-serif';
+          ctx.fillText(n.id, n.x + 8, n.y);
+        }
+      });
+    }
+
+    function runPrediction(mode = 'prob', topK = 6) {
+      predicted = [];
+      const emb = {};
+      graph.nodes.forEach(n => {
+        let seed = 0;
+        for (let i = 0; i < n.id.length; i++) seed = (seed * 31 + n.id.charCodeAt(i)) | 0;
+        const rnd = (Math.abs(Math.sin(seed)) * 1000) % 1;
+        emb[n.id] = [(seed % 13) / 13 + (rnd * 0.2), ((seed * 7) % 11) / 11 + (rnd * 0.3)];
+      });
+      const pairs = [];
+      for (let i = 0; i < graph.nodes.length; i++) {
+        for (let j = i + 1; j < graph.nodes.length; j++) {
+          const a = graph.nodes[i].id, b = graph.nodes[j].id;
+          if (graph.edges.find(e => (e.from === a && e.to === b) || (e.from === b && e.to === a))) continue;
+          const da = graph.nodes[i].deg || 0;
+          const db = graph.nodes[j].deg || 0;
+          let score = 0;
+          if (mode === 'prob') {
+            score = (emb[a][0] * emb[b][0]) + (emb[a][1] * emb[b][1]) + 0.05 * (da + db);
+          } else {
+            score = (da + db) + (emb[a][0] * emb[b][0]) * 0.2;
+          }
+          pairs.push({ from: a, to: b, score: +score.toFixed(4) });
+        }
+      }
+      pairs.sort((x, y) => y.score - x.score);
+      predicted = pairs.slice(0, topK);
+      updateResults();
+    }
+
+    function updateResults() {
+      predTableBody.innerHTML = '';
+      predicted.forEach((p, i) => {
+        const row = document.createElement('tr');
+        row.innerHTML = `<td>${i + 1}</td><td>${p.from}</td><td>${p.to}</td><td>${p.score}</td>`;
+        predTableBody.appendChild(row);
+      });
+      document.getElementById('m_newEdges').textContent = `New edges: ${predicted.length}`;
+      document.getElementById('m_estAcc').textContent = `Estimated (simulated) accuracy: ${(0.6 + predicted.length * 0.02).toFixed(2)}`;
+      document.getElementById('m_auc').textContent = `Estimated (simulated) AUC: ${(0.62 + predicted.length * 0.025).toFixed(2)}`;
+      draw();
+    }
+
+    function updateMetrics() {
+      document.getElementById('m_newEdges').textContent = 'New edges: 0';
+      document.getElementById('m_estAcc').textContent = 'Estimated (simulated) accuracy: -';
+      document.getElementById('m_auc').textContent = 'Estimated (simulated) AUC: -';
+    }
+
+    document.getElementById('fileInput').onchange = (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        try {
+          const data = JSON.parse(e.target.result);
+          if (data.nodes && data.edges) {
+            graph.nodes = data.nodes;
+            graph.edges = data.edges;
+            computeDegrees();
+            predicted = [];
+            updateMetrics();
+            draw();
+          } else {
+            alert("Invalid graph JSON structure.");
+          }
+        } catch (err) {
+          alert("Error parsing JSON file.");
+        }
+      };
+      reader.readAsText(file);
+    };
+
+    document.getElementById('genSmall').onclick = () => generateRandomGraph(8);
+    document.getElementById('genMedium').onclick = () => generateRandomGraph(16);
+    document.getElementById('genLarge').onclick = () => generateRandomGraph(28);
+    document.getElementById('predictBtn').onclick = () => {
+      const mode = document.getElementById('modeSelect').value;
+      const topK = parseInt(document.getElementById('topK').value) || 6;
+      runPrediction(mode, topK);
+    };
+    document.getElementById('resetBtn').onclick = () => { predicted = []; predTableBody.innerHTML = ''; updateMetrics(); draw(); };
+    document.getElementById('toggleLabels').onclick = () => { showLabels = !showLabels; draw(); };
+    document.getElementById('simulateStep').onclick = () => {
+      predicted.forEach(p => addEdge(p.from, p.to));
+      computeDegrees();
+      predicted = [];
+      predTableBody.innerHTML = '';
+      updateMetrics();
+      draw();
+    };
+    document.getElementById('downloadJSON').onclick = () => {
+      const blob = new Blob([JSON.stringify({ nodes: graph.nodes, edges: graph.edges, predicted }, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'predicted_topology.json';
+      a.click();
+    };
+    document.getElementById('downloadCSV').onclick = () => {
+      let csv = 'from,to,score,is_predicted\n';
+      graph.edges.forEach(e => csv += `${e.from},${e.to},,false\n`);
+      predicted.forEach(p => csv += `${p.from},${p.to},${p.score},true\n`);
+      const blob = new Blob([csv], { type: 'text/csv' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'edges.csv';
+      a.click();
+    };
+
+    generateRandomGraph(12);
+  </script>
+</body>
+</html>
